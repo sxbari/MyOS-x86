@@ -1,0 +1,25 @@
+AS = nasm
+CC = gcc
+LD = ld
+
+CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra
+LDFLAGS = -m elf_i386 -T linker.ld
+
+all: myos.bin myos.iso
+
+boot.o: boot/boot.asm
+	$(AS) -f elf32 boot/boot.asm -o boot.o
+
+kernel.o: kernel/main.c
+	$(CC) $(CFLAGS) -c kernel/main.c -o kernel.o
+
+myos.bin: boot.o kernel.o
+	$(LD) $(LDFLAGS) boot.o kernel.o -o myos.bin
+
+myos.iso: myos.bin
+	mkdir -p isodir/boot
+	cp myos.bin isodir/boot/myos.bin
+	grub-mkrescue -o myos.iso isodir
+
+clean:
+	rm -f boot.o kernel.o myos.bin myos.iso

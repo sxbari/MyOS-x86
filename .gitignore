@@ -1,0 +1,7 @@
+template-reference/
+limine-binary/
+kernel/.deps-obtained
+kernel/bin/
+*.iso
+*.o
+obj/
