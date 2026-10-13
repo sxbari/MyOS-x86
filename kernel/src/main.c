@@ -3,9 +3,16 @@
 #include <limine.h>
 #include <stddef.h>
 #include <stddef.h>
+#define BACKGROUND_COLOR 0x0030104F
 
 void idt_init(void);
 void pic_remap(uint64_t hhdm_offset);
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
+    .revision = 0
+};
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t base_revision[] = LIMINE_BASE_REVISION(6);
@@ -108,7 +115,73 @@ static void draw_char(
         }
     }
 }
+static char command_buffer[128];
+static int command_length = 0;
 
+static bool string_equals(const char *a, const char *b)
+{
+    while (*a && *b)
+    {
+        if (*a != *b)
+            return false;
+
+        a++;
+        b++;
+    }
+
+    return *a == '\0' && *b == '\0';
+}
+static void draw_text(
+    struct limine_framebuffer *framebuffer,
+    uint64_t x,
+    uint64_t y,
+    const char *text
+);
+static void get_cpu_vendor(char vendor[13])
+{
+    uint32_t eax, ebx, ecx, edx;
+
+    asm volatile (
+        "cpuid"
+        : "=a"(eax), "=b"(ebx),
+          "=c"(ecx), "=d"(edx)
+        : "a"(0)
+    );
+
+    for (int i = 0; i < 4; i++)
+    {
+        vendor[i]     = (ebx >> (i * 8)) & 0xFF;
+        vendor[i + 4] = (edx >> (i * 8)) & 0xFF;
+        vendor[i + 8] = (ecx >> (i * 8)) & 0xFF;
+    }
+
+    vendor[12] = '\0';
+
+}
+static void uint_to_string(uint64_t number, char *buffer)
+{
+    char temp[21];
+    int i = 0;
+    int j = 0;
+
+    if (number == 0)
+    {
+        buffer[0] = '0';
+        buffer[1] = '\0';
+        return;
+    }
+
+    while (number > 0)
+    {
+        temp[i++] = '0' + (number % 10);
+        number /= 10;
+    }
+
+    while (i > 0)
+        buffer[j++] = temp[--i];
+
+    buffer[j] = '\0';
+}
 void keyboard_put_char(char character)
 {
     static uint64_t cursor_x = 100;
@@ -118,12 +191,114 @@ void keyboard_put_char(char character)
         framebuffer_request.response->framebuffers[0];
 
     if (character == '\n')
+{
+    command_buffer[command_length] = '\0';
+
+    cursor_x = 100;
+    cursor_y += 14;
+
+    if (string_equals(command_buffer, "help"))
     {
-        cursor_x = 100;
-        cursor_y += 7;
+        draw_text(framebuffer, 100, cursor_y,
+          "HELP CLEAR ABOUT VERSION ECHO REBOOT CPU");
     }
+    else if (command_buffer[0] == 'e' &&
+         command_buffer[1] == 'c' &&
+         command_buffer[2] == 'h' &&
+         command_buffer[3] == 'o' &&
+         command_buffer[4] == ' ')
+{
+    draw_text(framebuffer, 100, cursor_y, command_buffer + 5);
+    cursor_y += 14;
+}
+    else if (string_equals(command_buffer, "about"))
+    {
+        draw_text(framebuffer, 100, cursor_y, "MYOS CUSTOM X86 64 OS");
+        cursor_y += 14;
+    }
+    else if (string_equals(command_buffer, "version"))
+    {
+        draw_text(framebuffer, 100, cursor_y, "MYOS VERSION 0 1");
+        cursor_y += 14;
+    }
+    else if (string_equals(command_buffer, "clear"))
+    {
+        uint32_t *pixels = framebuffer->address;
+
+        for (uint64_t y = 0; y < framebuffer->height; y++)
+            for (uint64_t x = 0; x < framebuffer->width; x++)
+                pixels[y * framebuffer->pitch / 4 + x] = 0x0030104F;
+
+        cursor_y = 120;
+    }
+    else if (string_equals(command_buffer, "reboot"))
+{
+    asm volatile (
+        "cli\n"
+        "movb $0xFE, %%al\n"
+        "outb %%al, $0x64\n"
+        :
+        :
+        : "al"
+    );
+
+    for (;;)
+        asm volatile ("hlt");
+}
+
+else if (string_equals(command_buffer, "cpu"))
+{
+    char vendor[13];
+    get_cpu_vendor(vendor);
+
+    draw_text(framebuffer, 100, cursor_y, "CPU VENDOR");
+    cursor_y += 7;
+
+    draw_text(framebuffer, 100, cursor_y, vendor);
+    cursor_y += 14;
+}
+else if (string_equals(command_buffer, "memory"))
+{
+    uint64_t usable_bytes = 0;
+
+    if (memmap_request.response != NULL)
+    {
+        for (uint64_t i = 0;
+             i < memmap_request.response->entry_count;
+             i++)
+        {
+            struct limine_memmap_entry *entry =
+                memmap_request.response->entries[i];
+
+            if (entry->type == LIMINE_MEMMAP_USABLE)
+                usable_bytes += entry->length;
+        }
+    }
+
+    char ram_text[21];
+    uint_to_string(usable_bytes / (1024 * 1024), ram_text);
+
+    draw_text(framebuffer, 100, cursor_y, "USABLE RAM MB");
+    cursor_y += 7;
+
+    draw_text(framebuffer, 100, cursor_y, ram_text);
+    cursor_y += 14;
+}
+else if (command_length > 0)
+{
+    draw_text(framebuffer, 100, cursor_y, "UNKNOWN COMMAND");
+    cursor_y += 14;
+}
+
+    command_length = 0;
+    cursor_x = 100;
+}
     else if (character == '\b')
     {
+        if (command_length == 0)
+            return;
+
+        command_length--;
         if (cursor_x > 100)
             cursor_x -= 6;
         else if (cursor_y > 120)
@@ -144,6 +319,10 @@ void keyboard_put_char(char character)
     }
     else
     {
+        if (command_length >= 127)
+            return;
+
+        command_buffer[command_length++] = character;
         if (character != ' ')
             draw_char(framebuffer, cursor_x, cursor_y, character);
 
@@ -200,7 +379,7 @@ void kmain(void)
     {
         for (uint64_t x = 0; x < framebuffer->width; x++)
         {
-            pixels[y * framebuffer->pitch / 4 + x] = 0x0000FF00;
+            pixels[y * framebuffer->pitch / 4 + x] = 0x0030104F;
         }
     }
     draw_text(framebuffer, 100, 100, "HELLO FROM MYOS");
