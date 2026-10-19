@@ -3,6 +3,10 @@
 #include <limine.h>
 #include <stddef.h>
 #include <stddef.h>
+#include "memory/heap.h"
+#include "filesystem/ramfs.h"
+#include "interrupts/timer.h"
+#include "scheduler/scheduler.h"
 #define BACKGROUND_COLOR 0x0030104F
 
 void idt_init(void);
@@ -131,6 +135,16 @@ static bool string_equals(const char *a, const char *b)
 
     return *a == '\0' && *b == '\0';
 }
+static bool starts_with(const char *text, const char *prefix)
+{
+    while (*prefix) {
+        if (*text != *prefix)
+            return false;
+        text++;
+        prefix++;
+    }
+    return true;
+}
 static void draw_text(
     struct limine_framebuffer *framebuffer,
     uint64_t x,
@@ -198,10 +212,23 @@ void keyboard_put_char(char character)
     cursor_y += 14;
 
     if (string_equals(command_buffer, "help"))
-    {
-        draw_text(framebuffer, 100, cursor_y,
-          "HELP CLEAR ABOUT VERSION ECHO REBOOT CPU");
-    }
+{
+    draw_text(framebuffer, 100, cursor_y,
+              "HELP CLEAR ABOUT VERSION");
+    cursor_y += 14;
+
+    draw_text(framebuffer, 100, cursor_y,
+              "ECHO REBOOT CPU MEMORY");
+    cursor_y += 14;
+
+    draw_text(framebuffer, 100, cursor_y,
+              "TOUCH LS CAT WRITE RM");
+    cursor_y += 14;
+
+    draw_text(framebuffer, 100, cursor_y,
+              "TICKS UPTIME");
+    cursor_y += 14;
+}
     else if (command_buffer[0] == 'e' &&
          command_buffer[1] == 'c' &&
          command_buffer[2] == 'h' &&
@@ -284,6 +311,99 @@ else if (string_equals(command_buffer, "memory"))
     draw_text(framebuffer, 100, cursor_y, ram_text);
     cursor_y += 14;
 }
+
+else if (starts_with(command_buffer, "touch "))
+{
+    if (ramfs_create(command_buffer + 6))
+        draw_text(framebuffer, 100, cursor_y, "FILE CREATED");
+    else
+        draw_text(framebuffer, 100, cursor_y, "CREATE FAILED");
+
+    cursor_y += 14;
+}
+else if (string_equals(command_buffer, "ls"))
+{
+    bool found = false;
+
+    for (size_t i = 0; i < RAMFS_MAX_FILES; i++) {
+        const char *name = ramfs_name(i);
+
+        if (name) {
+            draw_text(framebuffer, 100, cursor_y, name);
+            cursor_y += 14;
+            found = true;
+        }
+    }
+
+    if (!found) {
+        draw_text(framebuffer, 100, cursor_y, "NO FILES");
+        cursor_y += 14;
+    }
+}
+else if (starts_with(command_buffer, "cat "))
+{
+    const char *content = ramfs_read(command_buffer + 4);
+
+    if (content)
+        draw_text(framebuffer, 100, cursor_y, content);
+    else
+        draw_text(framebuffer, 100, cursor_y, "FILE NOT FOUND");
+
+    cursor_y += 14;
+}
+else if (starts_with(command_buffer, "rm "))
+{
+    if (ramfs_delete(command_buffer + 3))
+        draw_text(framebuffer, 100, cursor_y, "FILE DELETED");
+    else
+        draw_text(framebuffer, 100, cursor_y, "FILE NOT FOUND");
+
+    cursor_y += 14;
+}
+else if (starts_with(command_buffer, "write "))
+{
+    char *name = command_buffer + 6;
+    char *content = name;
+
+    while (*content && *content != ' ')
+        content++;
+
+    if (*content == '\0') {
+        draw_text(framebuffer, 100, cursor_y, "USAGE WRITE NAME TEXT");
+    }
+    else {
+        *content = '\0';
+        content++;
+
+        if (ramfs_write(name, content))
+            draw_text(framebuffer, 100, cursor_y, "FILE UPDATED");
+        else
+            draw_text(framebuffer, 100, cursor_y, "WRITE FAILED");
+    }
+
+    cursor_y += 14;
+}
+else if (string_equals(command_buffer, "ticks"))
+{
+    char buffer[21];
+    uint_to_string(timer_ticks(), buffer);
+
+    draw_text(framebuffer, 100, cursor_y, "TIMER TICKS");
+    cursor_y += 7;
+    draw_text(framebuffer, 100, cursor_y, buffer);
+    cursor_y += 14;
+}
+else if (string_equals(command_buffer, "uptime"))
+{
+    char buffer[21];
+    uint_to_string(timer_uptime(), buffer);
+
+    draw_text(framebuffer, 100, cursor_y, "UPTIME SECONDS");
+    cursor_y += 7;
+    draw_text(framebuffer, 100, cursor_y, buffer);
+    cursor_y += 14;
+}
+
 else if (command_length > 0)
 {
     draw_text(framebuffer, 100, cursor_y, "UNKNOWN COMMAND");
@@ -314,7 +434,7 @@ else if (command_length > 0)
         {
             for (uint64_t x = 0; x < 5; x++)
                 pixels[(cursor_y + y) * framebuffer->pitch / 4 + cursor_x + x] =
-                    0x0000FF00;
+                    BACKGROUND_COLOR;
         }
     }
     else
@@ -353,7 +473,24 @@ static void draw_text(
         text++;
     }
 }
+static volatile uint64_t counter_a = 0;
+static volatile uint64_t counter_b = 0;
 
+static void task_a(void)
+{
+    while (1) {
+        counter_a++;
+        asm volatile ("pause");
+    }
+}
+
+static void task_b(void)
+{
+    while (1) {
+        counter_b++;
+        asm volatile ("pause");
+    }
+}
 void kmain(void)
 {
     if (!LIMINE_BASE_REVISION_SUPPORTED(base_revision))
@@ -365,9 +502,28 @@ void kmain(void)
     {
         hcf();
     }
+    heap_init();
+    ramfs_init();
+    void *test1 = kmalloc(128);
+    void *test2 = kmalloc(256);
 
-    idt_init();
+    if (test1 == NULL || test2 == NULL)
+        hcf();
+
+    kfree(test1);
+    kfree(test2);
+
+    scheduler_init();
+
+    int pid_a = task_create(task_a);
+    int pid_b = task_create(task_b);
+
+    if (pid_a < 0 || pid_b < 0)
+        hcf();
+
+idt_init();
     pic_remap(hhdm_request.response->offset);
+    timer_init();
     
 
     struct limine_framebuffer *framebuffer =
@@ -383,6 +539,13 @@ void kmain(void)
         }
     }
     draw_text(framebuffer, 100, 100, "HELLO FROM MYOS");
+    if (scheduler_task_count() == 2 &&
+    scheduler_get_task(0)->state == TASK_READY &&
+    scheduler_get_task(1)->state == TASK_READY)
+{
+    draw_text(framebuffer, 100, 110,
+              "TASK RECORDS READY");
+}
 
     asm volatile ("sti");
     hcf();
