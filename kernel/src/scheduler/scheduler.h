@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
+#include <stdbool.h>
 #define MAX_TASKS 3
 #define TASK_STACK_SIZE 16384
 #define TIME_QUANTUM 5
@@ -33,4 +33,7 @@ int task_create(void (*entry)(void));
 uint32_t scheduler_task_count(void);
 task_t *scheduler_get_task(uint32_t index);
 
+
+uint64_t scheduler_on_tick(uint64_t interrupted_rsp);
+void scheduler_set_demo_running(bool running);
 #endif

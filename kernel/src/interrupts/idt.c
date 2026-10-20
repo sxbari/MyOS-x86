@@ -1,5 +1,5 @@
 #include <stdint.h>
-
+extern void mouse_irq_stub(void);
 extern void interrupt_stub(void);
 extern void keyboard_stub(void);
 
@@ -48,6 +48,7 @@ void idt_init(void)
     idt_set_gate(33, keyboard_stub);
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base = (uint64_t)&idt;
+    idt_set_gate(44, mouse_irq_stub);
 
     asm volatile ("lidt %0" : : "m"(idt_ptr));
 }

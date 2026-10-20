@@ -140,3 +140,53 @@ void pic_eoi(void)
 
     outb(0x20, 0x20);
 }
+void pic_enable_mouse_irq(void)
+{
+    uint8_t master_mask;
+    uint8_t slave_mask;
+
+    asm volatile (
+        "inb %1, %0"
+        : "=a"(master_mask)
+        : "Nd"((uint16_t)0x21)
+    );
+
+    asm volatile (
+        "inb %1, %0"
+        : "=a"(slave_mask)
+        : "Nd"((uint16_t)0xA1)
+    );
+
+    // Enable IRQ2: slave PIC cascade.
+    master_mask &= (uint8_t)~(1U << 2);
+
+    // Enable IRQ12: slave PIC IRQ4.
+    slave_mask &= (uint8_t)~(1U << 4);
+
+    asm volatile (
+        "outb %0, %1"
+        :
+        : "a"(master_mask), "Nd"((uint16_t)0x21)
+    );
+
+    asm volatile (
+        "outb %0, %1"
+        :
+        : "a"(slave_mask), "Nd"((uint16_t)0xA1)
+    );
+}
+
+void pic_mouse_eoi(void)
+{
+    // Mouse interrupt came from the slave PIC.
+    asm volatile (
+        "outb %0, %1"
+        :
+        : "a"((uint8_t)0x20),
+          "Nd"((uint16_t)0xA0)
+    );
+
+    // Existing function acknowledges master PIC
+    // and handles your current local APIC EOI.
+    pic_eoi();
+}

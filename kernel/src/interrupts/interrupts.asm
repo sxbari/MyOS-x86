@@ -4,10 +4,13 @@ extern timer_handler
 extern pic_eoi
 
 extern keyboard_handler
-
+extern scheduler_on_tick
 section .text
 
+
+
 interrupt_stub:
+    ; Save CPU registers
     push rax
     push rbx
     push rcx
@@ -24,12 +27,29 @@ interrupt_stub:
     push r14
     push r15
 
+    ; Save interrupted task's stack pointer
     mov rbx, rsp
-    and rsp, -16
-    call timer_handler
-    call pic_eoi
-    mov rsp, rbx
 
+    ; Align stack for C function calls
+    and rsp, -16
+
+    ; Update PIT ticks
+    call timer_handler
+
+    ; Acknowledge interrupt
+    call pic_eoi
+
+    ; Pass interrupted stack pointer
+    ; as first argument (RDI)
+    mov rdi, rbx
+
+    ; Ask scheduler which task runs next
+    call scheduler_on_tick
+
+    ; RAX contains the selected task's RSP
+    mov rsp, rax
+
+    ; Restore selected task's registers
     pop r15
     pop r14
     pop r13
@@ -46,7 +66,9 @@ interrupt_stub:
     pop rbx
     pop rax
 
+    ; Resume selected task
     iretq
+
 
 keyboard_stub:
     push rax
