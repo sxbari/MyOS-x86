@@ -418,9 +418,12 @@ static void get_cpu_vendor(char vendor[13])
  */
 
 static char cells[CONSOLE_MAX_ROWS][CONSOLE_MAX_COLS];
+static char rendered_cells[CONSOLE_MAX_ROWS][CONSOLE_MAX_COLS];
 
 static uint32_t
     cell_colors[CONSOLE_MAX_ROWS][CONSOLE_MAX_COLS];
+static uint32_t
+    rendered_cell_colors[CONSOLE_MAX_ROWS][CONSOLE_MAX_COLS];
 
 static uint32_t console_cols = 1;
 static uint32_t console_rows = 1;
@@ -432,6 +435,9 @@ static uint64_t text_x = 0;
 static uint64_t text_y = 0;
 
 static bool console_dirty = true;
+static bool console_rendered = false;
+static uint32_t rendered_cursor_row = 0;
+static uint32_t rendered_cursor_col = 0;
 static bool console_input_active = false;
 static uint64_t last_console_input_tick = 0;
 
@@ -650,7 +656,20 @@ static void console_render(
         return;
     }
 
-    graphics_clear_console_body(fb);
+    bool full_redraw = !console_rendered;
+
+    if (full_redraw) {
+        graphics_clear_console_body(fb);
+    } else if (rendered_cursor_col < console_cols) {
+        graphics_rect(
+            fb,
+            text_x + rendered_cursor_col * CHAR_STEP,
+            text_y + rendered_cursor_row * LINE_STEP + 15,
+            9,
+            2,
+            COLOR_BG
+        );
+    }
 
     uint64_t right =
         text_x + (uint64_t)console_cols * CHAR_STEP;
@@ -666,6 +685,22 @@ static void console_render(
 
             char ch = cells[r][c];
 
+            if (!full_redraw &&
+                ch == rendered_cells[r][c] &&
+                cell_colors[r][c] ==
+                    rendered_cell_colors[r][c]) {
+                continue;
+            }
+
+            graphics_rect(
+                fb,
+                text_x + c * CHAR_STEP,
+                text_y + r * LINE_STEP,
+                CHAR_STEP,
+                14,
+                COLOR_BG
+            );
+
             if (ch && ch != ' ') {
                 draw_scaled_char(
                     fb,
@@ -677,6 +712,9 @@ static void console_render(
                     bottom
                 );
             }
+
+            rendered_cells[r][c] = ch;
+            rendered_cell_colors[r][c] = cell_colors[r][c];
         }
     }
 
@@ -692,6 +730,9 @@ static void console_render(
         );
     }
 
+    rendered_cursor_row = cur_row;
+    rendered_cursor_col = cur_col;
+    console_rendered = true;
     console_dirty = false;
 }
 
@@ -1582,9 +1623,10 @@ static void kernel_run(struct limine_framebuffer *fb)
 
         bool task_status_changed =
             full_redraw ||
-            demo_redraw ||
-            power_a != previous_power_a ||
-            power_b != previous_power_b;
+            (console_open &&
+             (demo_redraw ||
+              power_a != previous_power_a ||
+              power_b != previous_power_b));
 
         bool viewer_front =
             file_viewer_is_open() &&
@@ -1638,6 +1680,7 @@ static void kernel_run(struct limine_framebuffer *fb)
 
             // Request fresh console rendering.
             console_dirty = true;
+            console_rendered = false;
 
             // Request task status repaint.
             demo_redraw = true;
